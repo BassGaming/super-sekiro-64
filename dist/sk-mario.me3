@@ -1,0 +1,15 @@
+profileVersion = "v1"
+# Sekiro is Arxan/GuardIT protected; me3 must neutralize it to load native DLLs.
+disable_arxan = true
+
+[[supports]]
+game = "sekiro"
+
+[[natives]]
+# relative to this .me3 file
+path = "sk_mario.dll"
+
+[[packages]]
+# "Super Sekiro 64" title logo: patched copies of the game's menu files, written by
+# tools/title/build_title.py (not in git: they are FromSoftware's files)
+path = "sk_mario_title"

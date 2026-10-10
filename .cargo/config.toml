@@ -1,0 +1,6 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[env]
+CFLAGS_x86_64_pc_windows_msvc = "-Wno-error=implicit-function-declaration -Wno-implicit-function-declaration"
+# (the flags that keep local paths out of the DLL are set by build.ps1 from the user folder)

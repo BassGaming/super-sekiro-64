@@ -1,0 +1,26 @@
+target/
+
+# Generated from the user's own SM64 ROM / n64decomp (Nintendo content, never commit)
+libsm64/src/decomp/mario/
+
+# Build output and runtime logs
+*.bin
+*.dll
+*.dll.new
+*.dll.old*
+logs/
+sk_mario.log
+sk_mario.prev.log
+
+# Local notes
+notes.local.md
+
+# Title logo package: built from the user's own game files by tools/title/build_title.py
+dist/sk_mario_title/
+__pycache__/
+
+# Super Mario 64 ROMs: the player's own, never commit
+*.z64
+*.n64
+*.v64
+release/

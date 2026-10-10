@@ -1,0 +1,50 @@
+[package]
+name = "sk-mario"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Super Mario 64 movement inside Sekiro (in-process libsm64). Ported from deltarooo/er-mario."
+publish = false
+
+[lib]
+name = "sk_mario"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Vendored subset of fromsoftware-rs (see vendor/fromsoftware-rs): fixes the Sekiro game-version
+# name bug and is where we add the Sekiro character/havok/camera structures the crate lacks.
+sekiro = { path = "vendor/fromsoftware-rs/crates/sekiro" }
+fromsoftware-shared = { path = "vendor/fromsoftware-rs/crates/shared" }
+from-singleton = "3"
+pelite = "0.10"
+iced-x86 = "1.21"
+ilhook = { version = "2.3.0", features = ["x64"] }
+glam = "0.30"
+# the title logo package (title.rs): Data1.bhd/.bdt decryption, DCX compression
+num-bigint = "0.4"
+aes = "0.8"
+flate2 = "1"
+cpal = "0.15"
+# er-mario's patched copy, plus a Present callback (hud.rs samples the frame for Mario's shading)
+hudhook = { path = "vendor/hudhook" }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_XboxController",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+panic = "unwind"
