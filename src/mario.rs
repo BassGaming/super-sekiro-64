@@ -70,6 +70,8 @@ const RECENTER: f32 = 5000.0;
 static ROM: OnceLock<Vec<u8>> = OnceLock::new();
 static TEXTURE: OnceLock<Vec<u8>> = OnceLock::new();
 static ENGINE_READY: AtomicBool = AtomicBool::new(false);
+/// Why Mario can't start (no ROM, libsm64 failed), shown when a savegame loads.
+static OFF_REASON: Mutex<Option<&'static str>> = Mutex::new(None);
 static MARIO_ID: AtomicI32 = AtomicI32::new(-1);
 /// Mario mode (F8): off = playing Sekiro, Mario hidden and frozen.
 /// Mario mode (F8 / Select); a savegame starts in Sekiro mode.
@@ -77,6 +79,9 @@ static MARIO_MODE: AtomicBool = AtomicBool::new(false);
 /// No player character since the last time in the world (the title screen): the next time in the
 /// world is a savegame loaded.
 static NO_PLAYER: AtomicBool = AtomicBool::new(true);
+/// The main menu was up since the last time in the world: the next world is a savegame loading
+/// (not a death's respawn, which also drops the player character for a moment).
+static FROM_MENU: AtomicBool = AtomicBool::new(true);
 /// In the world (not a load screen).
 static VISIBLE: AtomicBool = AtomicBool::new(false);
 /// The game moves its character itself for a while (grappling hook, a long fall): Mario rides.
@@ -158,9 +163,10 @@ pub fn shown() -> bool {
     VISIBLE.load(Ordering::Relaxed) && MARIO_MODE.load(Ordering::Relaxed)
 }
 
-/// No player character: the title screen and main menu (and the start of a load from it).
+/// The main menu: no player character, and the game's menu mode on (not the opening logos or a
+/// load screen).
 pub fn at_title() -> bool {
-    NO_PLAYER.load(Ordering::Relaxed)
+    NO_PLAYER.load(Ordering::Relaxed) && MENU.load(Ordering::Relaxed)
 }
 
 fn in_mario_mode() -> bool {
@@ -180,12 +186,15 @@ fn update_in_world() -> bool {
     let in_world = since.is_some_and(|t| t.elapsed().as_secs_f32() > 1.0);
     if VISIBLE.swap(in_world, Ordering::Relaxed) != in_world {
         crate::log(if in_world { "world: in the world" } else { "world: load screen" });
-        if in_world && NO_PLAYER.swap(false, Ordering::Relaxed) {
+        if in_world && FROM_MENU.swap(false, Ordering::Relaxed) {
             crate::log("world: a savegame loaded: Sekiro mode");
             if in_mario_mode() {
                 set_mode(false);
             }
-            crate::hud::banner("Press F1 for controls/help");
+            match *lock(&OFF_REASON) {
+                Some(why) => crate::hud::banner(why),
+                None => crate::hud::banner("Press F1 for controls/help"),
+            }
         }
     }
     in_world
@@ -284,6 +293,7 @@ pub fn start() {
         Ok(rom) => rom,
         Err(e) => {
             crate::log(format!("mario: {e}; Mario stays off"));
+            *lock(&OFF_REASON) = Some("No Super Mario 64 ROM found: Mario is off (see the log)");
             return;
         }
     };
@@ -306,7 +316,10 @@ pub fn start() {
             crate::log("mario: libsm64 initialised (with sound)");
             crate::audio::start();
         }
-        None => crate::log("mario: libsm64 initialisation failed/hung; Mario stays off"),
+        None => {
+            crate::log("mario: libsm64 initialisation failed/hung; Mario stays off");
+            *lock(&OFF_REASON) = Some("Mario couldn't start (see the log)");
+        }
     }
 }
 
@@ -363,9 +376,15 @@ fn surfaces_from(tris: &[crate::havok::Tri], mario: Vec3) -> Vec<sm64::SM64Surfa
     tris.iter()
         .filter_map(|t| {
             let s = t.map(conv);
-            if normal(&s).length_squared() < 1e-6 {
+            let n = normal(&s);
+            if n.length_squared() < 1e-6 {
                 return None;
             }
+            // SM64's surfaces have one side. A flat one facing down below Mario's feet would be a
+            // ceiling he can only fall through: there it is a floor that is wound the other way
+            let below = t.iter().all(|v| v.y < mario.y + 0.3);
+            let ceiling = (if flip { -n.y } else { n.y }) < -0.5 * n.length();
+            let flip = flip != (below && ceiling);
             Some(sm64::SM64Surface::grass(if flip { [r(s[0]), r(s[2]), r(s[1])] } else { [r(s[0]), r(s[1]), r(s[2])] }))
         })
         .collect()
@@ -455,7 +474,10 @@ fn update_collision(mario: Vec3) {
         return;
     }
     let due = match lock(&LOADED).as_ref() {
-        Some((_, c, at)) => c.distance(mario) > COL_RELOAD_DIST || at.elapsed().as_secs_f32() > 2.0,
+        // (and soon after a climb or a drop: what is below his feet decides the floors' facing)
+        Some((_, c, at)) => {
+            c.distance(mario) > COL_RELOAD_DIST || (c.y - mario.y).abs() > 1.0 || at.elapsed().as_secs_f32() > 2.0
+        }
         None => true,
     };
     if due {
@@ -1328,16 +1350,23 @@ fn camera(dt: f32) {
 
 /// Called every game frame from the task.
 pub fn frame() {
-    if !ENGINE_READY.load(Ordering::Relaxed) || worker::hung() {
-        return;
-    }
+    // the title screen and savegame loads are tracked even when Mario is off (the credits, the
+    // banner)
     if crate::player::update().is_none() {
         if !NO_PLAYER.swap(true, Ordering::Relaxed) {
             crate::log("world: no player character (title screen)");
         }
+        update_menu();
+        if at_title() {
+            FROM_MENU.store(true, Ordering::Relaxed);
+        }
         return;
     }
+    NO_PLAYER.store(false, Ordering::Relaxed);
     let in_world = update_in_world();
+    if !ENGINE_READY.load(Ordering::Relaxed) || worker::hung() {
+        return;
+    }
     create_mario();
     if MARIO_ID.load(Ordering::Relaxed) < 0 || !in_world {
         return;

@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fromsoftware_shared::{Program, rtti::find_rtti_classes};
@@ -420,7 +420,7 @@ fn section_fields(a: usize, codec: SectionCodec) -> (usize, usize, usize, usize,
 }
 
 static CODEC: AtomicU8 = AtomicU8::new(0);
-static MESH_LOGS: AtomicU8 = AtomicU8::new(0);
+static MESH_LOGS: AtomicU32 = AtomicU32::new(0);
 
 /// Decodes a `hknpCompressedMeshShapeData` into shape-local triangles. Layout (Elden Ring's):
 /// +0x30 domain min, +0x40 domain max, +0x60 sections (0x60 each), +0x70 primitives (u8 x4),
@@ -737,17 +737,25 @@ struct Mesh {
     cells: HashMap<(i32, i32, i32), Vec<u32>>,
     /// farthest vertex from the shape origin
     reach: f32,
+    /// the sum of the triangles' (b - a) x (c - a) (twice their area along their normals), and of
+    /// its |y|: how much of the mesh faces up rather than down, for the winding vote
+    facing: Vec3,
+    flat: f32,
 }
 
 impl Mesh {
     fn new(tris: Vec<Tri>) -> Self {
         let mut cells: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
         let mut reach: f32 = 0.0;
+        let (mut facing, mut flat) = (Vec3::ZERO, 0.0);
         let c = |v: f32| (v / CELL).floor() as i32;
         for (i, t) in tris.iter().enumerate() {
             if !t.iter().all(|v| v.is_finite() && v.abs().max_element() < 50_000.0) {
                 continue;
             }
+            let n = (t[1] - t[0]).cross(t[2] - t[0]);
+            facing += n;
+            flat += n.y.abs();
             let lo = t[0].min(t[1]).min(t[2]);
             let hi = t[0].max(t[1]).max(t[2]);
             reach = reach.max(lo.length()).max(hi.length());
@@ -763,7 +771,7 @@ impl Mesh {
                 }
             }
         }
-        Mesh { tris, cells, reach }
+        Mesh { tris, cells, reach, facing, flat }
     }
 
     /// Triangles touching the local box `lo..hi`.
@@ -936,18 +944,20 @@ pub fn query(center: Vec3, radius: f32, below: f32, above: f32) -> Option<Vec<Tr
         if !solid && !is_water && !(diag && flat < 60.0) {
             continue;
         }
-        // cheap reject by the cached reach (unknown shapes are looked at once)
-        if let Some(c) = cache.get(&shape) {
-            if c.reach < 0.0 || flat - c.reach > radius + AHEAD {
-                continue;
-            }
-        }
         if !readable(shape, 0x100) {
             continue;
         }
         let vtable = u64_at(shape);
         let data_off = MESH_DATA.load(Ordering::Relaxed).max(0x48);
         let key = u64_at(shape + data_off);
+        // cheap reject by the cached reach (unknown shapes are looked at once). Only while the entry
+        // is still this shape's: a respawn rebuilds the map's meshes, often at the same addresses,
+        // and a stale entry hid a new floor for good (Mario fell through it).
+        if let Some(c) = cache.get(&shape).filter(|c| c.vtable == vtable && c.key == key) {
+            if c.reach < 0.0 || flat - c.reach > radius + AHEAD {
+                continue;
+            }
+        }
         let fresh = cache.get(&shape).is_some_and(|c| c.vtable == vtable && c.key == key && c.mesh.is_some());
         if !fresh {
             let name = class(shape).unwrap_or_default();
@@ -990,6 +1000,10 @@ pub fn query(center: Vec3, radius: f32, below: f32, above: f32) -> Option<Vec<Tr
         let orthonormal = [rot.x_axis, rot.y_axis, rot.z_axis].iter().all(|v| (v.length() - 1.0).abs() < 0.02);
         let rot = if orthonormal { rot } else { Mat3::IDENTITY };
         let inv = rot.transpose();
+        // the map's meshes don't all wind their triangles the same way (Havok collides with both
+        // sides; SM64 with one): a mesh that mostly faces down is turned over, so its floors face up
+        // like the rest
+        let turn = (rot * mesh.facing).y < -0.25 * mesh.flat;
         // the query box in body space (a rotated box: bound it generously)
         let local = inv * (center - t);
         let r = Vec3::new(radius, below.max(above), radius).length();
@@ -997,6 +1011,7 @@ pub fn query(center: Vec3, radius: f32, below: f32, above: f32) -> Option<Vec<Tr
         mesh.query(local - Vec3::splat(r), local + Vec3::splat(r), &mut idx);
         for &k in &idx {
             let w = mesh.tris[k as usize].map(|v| rot * v + t);
+            let w = if turn { [w[0], w[2], w[1]] } else { w };
             if !solid {
                 if diag {
                     if let Some(y) = height_at(&w, center.x, center.z).filter(|y| (y - center.y).abs() < 6.0) {

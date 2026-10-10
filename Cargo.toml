@@ -1,6 +1,6 @@
 [package]
 name = "sk-mario"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Super Mario 64 movement inside Sekiro (in-process libsm64). Ported from deltarooo/er-mario."
